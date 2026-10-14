@@ -1,7 +1,11 @@
-from  fastapi import FastAPI
-app = FastAPI()
-# call a  funiction useing api  
+from fastapi import FastAPI
 
-@app.get("/welcome")  #  listening to the root endpoint  
-def welcome():
-    return {"message": "Welcome to the mini-rag API! made by joox "}
+from dotenv import load_dotenv
+
+load_dotenv(".env")
+
+from routes import base
+
+app = FastAPI()
+
+app.include_router(base.base_router)
