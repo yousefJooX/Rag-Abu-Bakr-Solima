@@ -94,3 +94,105 @@ Replaces pip + venv + conda + pip-tools. Written in Rust, so it's very fast.
 ## 💡 Ideas to apply in my graduation project (legal RAG)
 - Same structure: `.env` + `.env.example`, `uv`, one branch per feature.
 - Use `/docs` to demo the API to the supervisor.
+
+---
+
+## Tutorial 003 — Nested Routes + Env Values
+
+### Why split routes out of `main.py`?
+- Putting every endpoint in `main.py` turns it into one huge file that's hard to maintain.
+- Split by responsibility: every group of endpoints lives in its own file inside `routes/`.
+- `main.py` only creates the app and **includes** the routers.
+
+### Make `routes/` a Python package
+- Add an empty `routes/__init__.py`, so Python treats the folder as a package you can import from.
+
+```
+routes/
+├── __init__.py
+└── base.py      ← base_router (welcome endpoint)
+```
+
+### `APIRouter`: a mini app for a group of endpoints
+```python
+from fastapi import APIRouter
+
+base_router = APIRouter(
+    prefix="/api/v1",   # added before every route in this router
+    tags=["api_v1"],    # group name in /docs (Swagger)
+)
+
+@base_router.get("/")   # final path = /api/v1/
+def welcome():
+    ...
+```
+And in `main.py`:
+```python
+from routes import base
+app.include_router(base.base_router)
+```
+
+| Param | What it does |
+|-------|--------------|
+| `prefix` | Default path before all routes in the router. `"/"` becomes `/api/v1/`. **Must start with `/`**, otherwise `AssertionError: A path prefix must start with '/'` |
+| `tags` | Groups endpoints in `/docs`. Easy to rename later in one place |
+
+- **Why `/api/v1`?** That's **API versioning**. If the API changes in a breaking way, add `/api/v2` and old clients keep working on v1.
+- Both import styles work: `from routes import base` (the instructor's, nicer with many routers) or `from routes.base import base_router` (mine, more direct).
+
+### Read values from `.env` instead of hardcoding
+- Goal: the welcome response shows the app name, version and author from `.env`, not a hardcoded string.
+```python
+# main.py — load .env BEFORE importing routes
+from dotenv import load_dotenv
+load_dotenv(".env")
+
+from routes import base
+```
+```python
+# routes/base.py
+import os
+app_name = os.getenv("APP_NAME")
+```
+- `load_dotenv()` copies the `.env` values into the environment variables, then `os.getenv()` reads them.
+- **Order matters:** call `load_dotenv` before importing any module that reads env values.
+- New variable in `.env` (`AUTHOR`) → also add it to `.env.example` ✅
+- ⚠️ `os.getenv` returns `None` if the variable is missing, with no error. Next step: `pydantic-settings` validates config at startup.
+
+- ✅ Tested in Postman: the response now returns the app name, author and version from `.env`.
+
+### `async def` — FastAPI handles many requests at once
+- A normal `def` endpoint blocks a worker until it finishes. `async def` lets the server handle other requests **while waiting** (DB query, LLM API call, file upload).
+- Rule: use `async def` + `await` when the endpoint calls async I/O (e.g. `httpx`, async DB drivers, OpenAI async client).
+- ⚠️ Don't call blocking code (e.g. `time.sleep`, `requests.get`) inside `async def`, because it freezes the whole server. Use plain `def` for that, and FastAPI runs it in a thread pool.
+```python
+@base_router.get("/")
+async def welcome():
+    ...
+```
+
+### Postman
+- **Postman** is an API client: send requests, see responses, save them.
+- I opened the repo in Postman **Git mode (Local View)**, so everything is saved as YAML inside the repo:
+```
+.postman/resources.yaml                               ← workspace ID
+postman/environments/local.environment.yaml           ← environment
+postman/collections/mini-rag-app/welcome.request.yaml ← requests
+```
+- **Environment** `local`: variable `api = http://localhost:5000`, used as `{{api}}/api/v1/`.
+  - The value is stored **locally only** (not in the YAML), so secrets never go to GitHub. After cloning, set `api` yourself.
+- **Collection** `mini-rag-app`: groups all the project's requests.
+- Request type **HTTP** (REST), method **GET**.
+
+### 🐛 Bugs I hit
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `{{api}}` red + `ENOTFOUND` | Variable saved as `'   api'` (spaces) + empty value | Retype the name with no spaces, set the value, Ctrl+S |
+| `404 Not Found` on `/api/v1/` | Router had no `prefix` yet | Add `prefix="/api/v1"` |
+| `AssertionError: A path prefix must start with '/'` | Left `prefix="___"` | Prefix must start with `/` |
+
+### Request flow
+```
+Postman ─ GET {{api}}/api/v1/ ─▶ uvicorn :5000 ─▶ main.py (app)
+        ─▶ base_router (/api/v1) ─▶ welcome() ─▶ 200 OK + JSON
+```
