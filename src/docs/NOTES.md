@@ -196,3 +196,13 @@ postman/collections/mini-rag-app/welcome.request.yaml ← requests
 Postman ─ GET {{api}}/api/v1/ ─▶ uvicorn :5000 ─▶ main.py (app)
         ─▶ base_router (/api/v1) ─▶ welcome() ─▶ 200 OK + JSON
 ```
+
+## Tutorial 004 — Uploading a File
+
+at the frist of this lec we  need to make a goog stracter  for this fucking   folders  
+a divice   search  about 
+ex : "fastapi boilerplate github"
+like a  fucking god bestbractes for good  stracher files 
+
+
+all  logic  application  we 'll  move it into folder  name  is src "calude 'll cehck again thos  task  "  
