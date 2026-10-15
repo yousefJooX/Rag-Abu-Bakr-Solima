@@ -197,12 +197,135 @@ Postman ─ GET {{api}}/api/v1/ ─▶ uvicorn :5000 ─▶ main.py (app)
         ─▶ base_router (/api/v1) ─▶ welcome() ─▶ 200 OK + JSON
 ```
 
-## Tutorial 004 — Uploading a File
+## Tutorial 004 — Project Structure + File Upload
 
-at the frist of this lec we  need to make a goog stracter  for this fucking   folders  
-a divice   search  about 
-ex : "fastapi boilerplate github"
-like a  fucking god bestbractes for good  stracher files 
+### Start from a boilerplate
+- Don't reinvent the wheel. Search `"<framework> boilerplate github"` (e.g. `fastapi boilerplate github`) and follow a structure other people already tested in production.
+- Repo root keeps only project-level files (`README.md`, `LICENSE`). **All application code goes inside `src/`.** As the project grows you always know what is the app and what isn't.
 
+### MVC: keep logic out of the routes
+- **M**odels: the data (DB, enums, schemas).
+- **V**iews: what the user sees. We have none, because this is an API.
+- **C**ontrollers: the logic.
+- A route should only **receive the request and call the logic**, not contain it. Separate logic means you can test the logic and the route independently.
 
-all  logic  application  we 'll  move it into folder  name  is src "calude 'll cehck again thos  task  "  
+```
+src/
+├── main.py
+├── routes/        ← endpoints only (base.py, data.py)
+├── controllers/   ← logic (BaseController, DataController, ...)
+├── models/        ← data + enums
+└── helpers/       ← shared utilities with no single owner (config.py)
+```
+
+### Why `__init__.py`?
+- It makes the folder a **Python package**, so you can import from it.
+- It's also the **import gateway** for the package:
+```python
+# controllers/__init__.py
+from .DataController import DataController
+```
+```python
+# anywhere else
+from controllers import DataController   # instead of controllers.DataController.DataController
+```
+- Bonus: whatever is exported in `__init__.py` is the package's "public" API. The rest is internal.
+
+### Config with `pydantic-settings` (replaces `load_dotenv` + `os.getenv`)
+- Pydantic = data **validation**. You declare the type of every value, and the app fails at startup if a value is missing or has the wrong type, instead of a silent `None` later.
+```python
+# helpers/config.py
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    APP_NAME: str
+    APP_VERSION: str
+    FILE_ALLOWED_TYPES: list[str]   # JSON list in .env
+    FILE_MAX_SIZE_MB: int
+
+    class Config:
+        env_file = ".env"
+
+def get_settings():
+    return Settings()
+```
+- `main.py` no longer needs `load_dotenv`. Each part asks `get_settings()` for the config.
+- Change how config loads → change it in **one place**.
+
+### `Depends`: dependency injection
+```python
+from fastapi import Depends
+from helpers.config import get_settings, Settings
+
+@base_router.get("/")
+async def welcome(app_settings: Settings = Depends(get_settings)):
+    return {"app": app_settings.APP_NAME}
+```
+- The route **depends** on the settings. FastAPI calls `get_settings()` and passes the result in, so the route never runs without them.
+- `: Settings` is a type hint. It doesn't change behavior, but the editor gets autocomplete and the reader knows it's a class (not a dict or a list).
+
+### Upload endpoint + `project_id`
+```python
+data_router = APIRouter(prefix="/api/v1/data", tags=["api_v1", "data"])
+
+@data_router.post("/upload/{project_id}")
+async def upload_data(project_id: str, file: UploadFile,
+                      app_settings: Settings = Depends(get_settings)):
+    ...
+```
+- `{project_id}` is a **path parameter**. Every file belongs to a project, so the app is **multi-tenant** from day one (each project is separate).
+- `project_id: str`, not `int`: it's an identifier, not a number you do math on.
+- `UploadFile` needs `python-multipart` (already installed in tut 002).
+- Remember: `app.include_router(data.data_router)` in `main.py`, otherwise `404`.
+
+### Never trust an uploaded file: validate it
+- Check the **type** and the **size** before writing anything to disk.
+- Limits live in `.env` (+ `.env.example` + `Settings`), not hardcoded:
+```env
+FILE_ALLOWED_TYPES=["text/plain", "application/pdf"]
+FILE_MAX_SIZE_MB=10
+```
+- Prefix related settings (`FILE_...`) so you know what belongs to what.
+- Check the **MIME type** (`file.content_type`), not the extension. Anyone can rename `virus.exe` to `cv.pdf`. MIME isn't perfect protection, but it's much better.
+- `file.size` is in **bytes**, the setting is in **MB**: compare against `FILE_MAX_SIZE_MB * 1024 * 1024`.
+
+### `BaseController` + inheritance
+- All controllers need the settings, so load them once in a parent class:
+```python
+# controllers/BaseController.py
+class BaseController:
+    def __init__(self):
+        self.app_settings = get_settings()
+```
+```python
+# controllers/DataController.py
+from .BaseController import BaseController
+
+class DataController(BaseController):
+    def __init__(self):
+        super().__init__()   # call the parent constructor (اصحى يا بابا)
+```
+- `__init__` is the **constructor**. It runs automatically when you create an object.
+- `self` is this object. `super()` is the parent class.
+- Every method in a class takes `self` as its first parameter.
+
+### 🐛 Bugs I hit
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `PydanticImportError: BaseSettings has been moved to the pydantic-settings package` | Pydantic v2 moved it | `from pydantic_settings import BaseSettings` |
+| `.venv/bin/uvicorn: .../python: No such file or directory` | Renamed/moved the project folder. A venv stores absolute paths, so it breaks | `rm -rf .venv && uv sync` (never move a venv, recreate it) |
+| `VIRTUAL_ENV=... does not match the project environment` | An old venv was still activated in the shell | `deactivate` |
+| Postman `{{api}}` empty | Environment `local` had no value or wasn't selected | Set `api = http://127.0.0.1:5000`, select `local` (top right) |
+- Run uvicorn from inside `src/`: imports (`from routes import ...`) and `.env` are relative to it.
+- Avoid spaces in folder names. They break venvs, shebangs and scripts.
+
+### ⏭️ Rest of the tutorial (to do)
+- [ ] Rename `FILE_ALLOWED_EXTENSIONS` → `FILE_ALLOWED_TYPES` (`.env`, `.env.example`, `Settings`), because they're MIME types, not extensions
+- [ ] `validate_uploaded_file` returns `(bool, signal)`: type check, then size check
+- [ ] `models/enums/ResponseEnums.py`: a `ResponseSignal(Enum)` holding all messages in one place (`FILE_TYPE_NOT_SUPPORTED`, `FILE_SIZE_EXCEEDED`, `FILE_UPLOAD_SUCCESS`, `FILE_UPLOAD_FAILED`), used as `.value`
+- [ ] Return `JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"signal": ...})` on failure
+- [ ] `ProjectController.get_project_path(project_id)` → `assets/files/<project_id>/`, created with `os.makedirs` if missing
+- [ ] Build paths with `os.path.join` (works on Linux **and** Windows), base dir from `os.path.dirname(os.path.dirname(__file__))`
+- [ ] `FILE_DEFAULT_CHUNK_SIZE=512000` in `.env`. Write the file **in chunks** with `aiofiles` so big uploads don't fill the RAM
+- [ ] Unique, clean file name: random 12-char key + `_` + name cleaned with regex; regenerate if it already exists
+- [ ] `try/except` around the write + `logging.getLogger("uvicorn.error")`. Log the real error, give the user only `FILE_UPLOAD_FAILED` (don't leak server details)
