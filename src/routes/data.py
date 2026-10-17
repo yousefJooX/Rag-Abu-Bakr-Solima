@@ -1,4 +1,4 @@
-from fastapi import APIRouter , Depends , UploadFile, logger,status 
+from fastapi import APIRouter , Depends , UploadFile, status
 from fastapi.responses import JSONResponse
 import os  
 from helpers.config import get_settings , Settings
@@ -44,7 +44,7 @@ async def upload_data(project_id: str,file: UploadFile,
                 "signal": ResponseSignal.FILE_UPLOAD_FAILED.value
             }
         )
-    
-        return JSONResponse(
-           content={"signal": ResponseSignal.FILE_UPLOADED_SUCCESSFULLY.value}
-       )
+
+    return JSONResponse(
+        content={"signal": ResponseSignal.FILE_UPLOADED_SUCCESSFULLY.value}
+    )
