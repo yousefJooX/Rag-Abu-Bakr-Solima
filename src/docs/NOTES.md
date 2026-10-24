@@ -1,9 +1,20 @@
 # mini-rag — Course Notes
 > Notes I take while following the course, plus things I searched/learned on my own.
 
+## 🗺️ Video ↔ Branch map
+| Video | Branch | Topic |
+|-------|--------|-------|
+| 04 | `tut/001` | Project Boilerplate |
+| 05 | `tut/002` | Requirements & First FastAPI App |
+| 06 | `tut/003` | Nested Routes + Env Values |
+| 07 | `tut/004` | Project Structure + File Upload |
+| 08 | `tut/005` | File Processing (schema + loaders + chunking) |
+
+> 💬 أي سطر بيبدأ بـ 💬 ده كومنت للفهم، مش من كلام الكورس.
+
 ---
 
-## Tutorial 001 — Project Boilerplate
+## 🎬 mini-RAG | 04 | Project Boilerplate · `tut/001`
 
 ### Git workflow
 - One branch per tutorial: `tut/001`, `tut/002`, ...
@@ -32,7 +43,7 @@
 
 ---
 
-## Tutorial 002 — Requirements & First FastAPI App
+## 🎬 mini-RAG | 05 | Requirements & First FastAPI App · `tut/002`
 
 ### FastAPI vs Uvicorn
 - **FastAPI**: the web framework (routes, validation, docs). It pushes you to write standard code.
@@ -97,7 +108,7 @@ Replaces pip + venv + conda + pip-tools. Written in Rust, so it's very fast.
 
 ---
 
-## Tutorial 003 — Nested Routes + Env Values
+## 🎬 mini-RAG | 06 | Nested Routes + Env Values · `tut/003`
 
 ### Why split routes out of `main.py`?
 - Putting every endpoint in `main.py` turns it into one huge file that's hard to maintain.
@@ -197,7 +208,9 @@ Postman ─ GET {{api}}/api/v1/ ─▶ uvicorn :5000 ─▶ main.py (app)
         ─▶ base_router (/api/v1) ─▶ welcome() ─▶ 200 OK + JSON
 ```
 
-## Tutorial 004 — Project Structure + File Upload
+---
+
+## 🎬 mini-RAG | 07 | Project Structure + File Upload · `tut/004`
 
 ### Start from a boilerplate
 - Don't reinvent the wheel. Search `"<framework> boilerplate github"` (e.g. `fastapi boilerplate github`) and follow a structure other people already tested in production.
@@ -488,3 +501,272 @@ Postman POST {{api}}/api/v1/data/upload/5
 
 ### 🧰 Tools
 - VS Code: **Material Icon Theme** (`PKief.material-icon-theme`) gives every folder and file type its own icon.
+
+---
+
+## 🎬 mini-RAG | 08 | File Processing (schema + loaders + chunking) · `tut/005`
+
+> 💬 **الفكرة في سطر:** endpoint جديد `/process/{project_id}`. تبعتله `file_id` ← يقرا الملف (txt/pdf) بـ LangChain ← يقطّعه chunks ← يرجّعها.
+
+### 0. Small fix first: upload returns the `file_id`
+- `generate_unique_filepath` returns two values: `(file_path, file_id)`.
+- The upload response should also return `file_id`. The user needs it later to say "process this file".
+```python
+return JSONResponse(content={
+    "signal": ResponseSignal.FILE_UPLOADED_SUCCESSFULLY.value,
+    "file_id": file_id,
+})
+```
+> 💬 من غيره اليوزر مش هيعرف اسم الملف الجديد (random key + الاسم)، فمش هيعرف يطلب process. ⬜ لسه مش معمول عندي، دلوقتي باخد الاسم من `assets/files/<project_id>/`.
+
+### 1. Schema: the shape of the request body
+- The endpoint expects `file_id` as a `str`. What if the user sends a number, a list, or nothing at all?
+- **Validate every request before you work on it.** Doing it by hand is painful, so Pydantic does it.
+- New folder `routes/schemes/` (+ an empty `__init__.py`) with `routes/schemes/data.py`:
+```python
+from pydantic import BaseModel
+from typing import Optional
+
+class ProcessRequest(BaseModel):
+    file_id: str                       # required
+    chunk_size: Optional[int] = 100    # optional, default 100
+    overlap_size: Optional[int] = 20   # optional, default 20
+    do_reset: Optional[int] = 0        # 1 = delete old chunks and start again
+```
+| Field | Required? | Meaning |
+|-------|-----------|---------|
+| `file_id` | ✅ | Which file to process (the name returned by upload) |
+| `chunk_size` | ❌ (100) | Max length of one chunk |
+| `overlap_size` | ❌ (20) | How much each chunk repeats from the previous one |
+| `do_reset` | ❌ (0) | `1` = delete everything processed before for this file, then start fresh |
+
+- Inheriting from `BaseModel` gives the class Pydantic's validation.
+- `Optional[int] = 100`: the user may skip it, and then 100 is used.
+- The `do_` prefix is a naming habit: it tells you this parameter **triggers an action**, not just a value.
+> 💬 `do_reset` لسه مش مستخدم. هيبان دوره لما نخزن الـ chunks في DB.
+> 💬 Pydantic بيحوّل `"500"` لـ `500` لوحده (lax mode)، بس `"abc"` هترجّع `422`. ابعت الأرقام أرقام.
+
+### 2. The endpoint takes the schema
+```python
+from .schemes.data import ProcessRequest
+
+@data_router.post("/process/{project_id}")
+async def process_endpoint(project_id: str, request: ProcessRequest):
+    file_id = request.file_id
+    chunk_size = request.chunk_size
+    overlap_size = request.overlap_size
+```
+- `request: ProcessRequest` makes FastAPI read the body as **JSON** and validate it. If the shape is wrong it returns `422` by itself, and your code never runs.
+- Postman: **Body → raw → JSON**:
+```json
+{
+    "file_id": "zxizsjrNhLz1_lec2notebooklm.txt",
+    "chunk_size": 500
+}
+```
+> 💬 **قاعدة:** `UploadFile` ← form-data. `BaseModel` ← raw JSON.
+
+### 3. `ProcessController`
+```python
+from .BaseController import BaseController
+from .ProjectController import ProjectController
+
+class ProcessController(BaseController):
+    def __init__(self, project_id: str):
+        super().__init__()
+        self.project_id = project_id
+        self.project_path = ProjectController().get_project_path(project_id=project_id)
+```
+- It takes `project_id` in the constructor because **every** method needs the project's folder.
+- `project_path` = `assets/files/<project_id>/`, computed once and reused everywhere.
+- Export it in `controllers/__init__.py`: `from .ProcessController import ProcessController`.
+> 💬 **ليه `super().__init__()`؟** لما بتكتب `__init__` في الابن بتعمل override على بتاع الأب، فالأب مش بيشتغل. الـ `super().__init__()` بتشغّله الأول (settings + paths)، وبعدين الابن يضيف حاجته (`project_id`). من غيرها `self.app_settings` مش هتبقى موجودة.
+> 💬 **ليه controller لوحده؟** Single Responsibility: الـ Data للـ upload والـ validation، والـ Project لفولدر المشروع، والـ Process للقراية والتقطيع.
+
+### 4. Small functions, clear names
+```python
+def get_file_extension(self, file_id: str):
+    return os.path.splitext(file_id)[-1]   # "abc_notes.pdf" → ".pdf"
+```
+- A one-line function is still worth it if you'll reuse it.
+- Long, clear names (`get_file_content`, `process_file_content`) beat short, vague ones.
+- Same thing = same parameter name everywhere (`file_id`), so you never get confused.
+
+### 5. Loaders: one per file type (LangChain)
+- To get text out of a file you need a **loader** that understands its format. `.txt` is easy; `.pdf` and `.docx` need special ones.
+- The instructor's take on LangChain: use its **components** (loaders, splitters) and not its ready-made **chains** (load + split + answer in one call). Chains are hard to control, and not every module is efficient in production.
+- Big win: **every loader has the same interface**. `loader.load()` always returns `list[Document]`, whatever the file type.
+```bash
+uv add langchain langchain-community pymupdf
+uv export --no-hashes --no-dev --no-emit-project -o requirements.txt
+```
+- Extensions live in an enum, not hardcoded strings (`models/enums/ProcessingEnum.py`, exported in `models/__init__.py`):
+```python
+from enum import Enum
+
+class ProcessingEnum(Enum):
+    TXT = ".txt"
+    PDF = ".pdf"
+```
+```python
+from langchain_community.document_loaders import TextLoader, PyMuPDFLoader
+from models import ProcessingEnum
+
+def get_file_loader(self, file_id: str):
+    file_extension = self.get_file_extension(file_id=file_id)
+    file_path = os.path.join(self.project_path, file_id)
+
+    if file_extension == ProcessingEnum.TXT.value:
+        return TextLoader(file_path, encoding="utf-8")
+    if file_extension == ProcessingEnum.PDF.value:
+        return PyMuPDFLoader(file_path)
+    return None   # unsupported → the route returns 400
+```
+- `encoding="utf-8"`: without it, Arabic text can crash `TextLoader` (especially on Windows).
+- The path is built **inside** the controller from `project_path` + `file_id`, so the route only passes `file_id`.
+
+**Which PDF loader?** It depends on the PDF (real text or scanned, language, tables). In a real project, try several on your own files and keep the one that extracts best.
+
+| Loader | When |
+|--------|------|
+| `PyMuPDFLoader` | Default. Very fast, good on normal PDFs (used in the course) |
+| `PyPDFLoader` | Simpler and lighter, slower |
+| `PyMuPDF4LLM` | Outputs **markdown** (headings, tables) |
+| `UnstructuredPDFLoader` | Complex layouts (columns, tables). Heavy |
+| OCR (Tesseract / Docling) | **Scanned** PDFs. The others return empty text |
+
+> 💬 **لمشروع التخرج:** الـ PDFs العربي ممكن تطلع الحروف فيها مقلوبة أو مفككة (RTL)، والقوانين القديمة غالباً scanned. جرّب على 2-3 ملفات حقيقية وبص على النتيجة بعينك.
+
+- Links: [Document loaders](https://docs.langchain.com/oss/python/integrations/document_loaders/index) · [PyMuPDFLoader API](https://reference.langchain.com/v0.3/python/community/document_loaders/langchain_community.document_loaders.pdf.PyMuPDFLoader.html) · [PyMuPDF4LLM](https://docs.langchain.com/oss/python/integrations/document_loaders/pymupdf4llm)
+
+### 6. `Document` = `page_content` + `metadata`
+```python
+def get_file_content(self, file_id: str):
+    loader = self.get_file_loader(file_id=file_id)
+    if loader is None:
+        return None
+    return loader.load()   # list[Document]
+```
+- `page_content`: the text.
+- `metadata`: info about where it came from: `source` (file path), `page` for PDFs, and so on.
+- A `.txt` gives **one** `Document`. A `.pdf` gives **one per page**.
+
+### 7. Why chunks?
+![RAG data processing](image.png)
+- In RAG the user asks a question, we find the **closest pieces** in our documents, then send the question **+ those pieces** to the LLM.
+- Sending whole documents is slow and expensive, and can go over the LLM's **token limit** (context window).
+- Smaller pieces mean cheaper, faster, and more precise answers. Later the chunks become **embeddings** stored in a **vector DB** (next videos).
+
+### 8. `RecursiveCharacterTextSplitter`
+- LangChain has splitters for each kind of content (HTML, JSON, code...). txt and pdf end up as plain text, so we use a **character** splitter.
+- The plain `CharacterTextSplitter` cuts at exactly N characters, so it can cut in the middle of a word.
+- The **Recursive** one tries natural boundaries first (paragraphs `\n\n`, then lines `\n`, then spaces), so it doesn't cut words or sentences in half.
+- **`chunk_size`**: max length of a chunk. 1000 characters with `chunk_size=100` gives about 10 chunks.
+- **`chunk_overlap`**: after cutting at 100, go back 20 and start the next chunk from 80. A cut sometimes lands in the middle of an important piece of info, and the overlap lets the next chunk carry it complete. `0` = hard cuts, no overlap.
+- **`length_function=len`**: length is counted in **characters** (works for Arabic and English). You can pass another function, for example one that counts tokens.
+```python
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+def process_file_content(self, file_content: list, file_id: str,
+                         chunk_size: int = 100, overlap_size: int = 20):
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=overlap_size,
+        length_function=len,
+    )
+    file_content_texts = [rec.page_content for rec in file_content]
+    file_content_metadata = [rec.metadata for rec in file_content]
+
+    chunks = text_splitter.create_documents(
+        file_content_texts,
+        metadatas=file_content_metadata,
+    )
+    return chunks
+```
+- `create_documents` takes a **list of texts**. `metadatas` gives every chunk a copy of the metadata of the text it came from, so for each chunk you know which file and which page.
+> 💬 `[rec.page_content for rec in file_content]` = list comprehension. نفس الـ for loop اللي بتعمل `append`، بس في سطر واحد.
+> 💬 `chunk_size=100` صغيرة أوي، كل chunk تبقى جملة أو نص جملة. في RAG حقيقي الناس بتبدأ من 500-1000.
+
+My notes on chunking techniques (from my RAG course):
+![12 chunking techniques](image-1.png)
+
+### 9. The route just calls functions
+```python
+@data_router.post("/process/{project_id}")
+async def process_endpoint(project_id: str, request: ProcessRequest):
+    file_id = request.file_id
+    chunk_size = request.chunk_size
+    overlap_size = request.overlap_size
+
+    process_controller = ProcessController(project_id=project_id)
+
+    file_content = process_controller.get_file_content(file_id=file_id)
+    if file_content is None:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"signal": ResponseSignal.FILE_PROCESSING_FAILED.value},
+        )
+
+    chunks = process_controller.process_file_content(
+        file_content=file_content,
+        file_id=file_id,
+        chunk_size=chunk_size,
+        overlap_size=overlap_size,
+    )
+    if chunks is None or len(chunks) == 0:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"signal": ResponseSignal.FILE_PROCESSING_FAILED.value},
+        )
+
+    return JSONResponse(content={
+        "signal": ResponseSignal.FILE_PROCESSED_SUCCESSFULLY.value,
+        "file_id": file_id,
+        "num_chunks": len(chunks),
+        "chunks": [c.model_dump() for c in chunks],
+    })
+```
+- The instructor's point: **when the controllers are designed right, the endpoint barely has any logic.** It just calls functions.
+- New signals in `ResponseSignal`: `FILE_PROCESSED_SUCCESSFULLY`, `FILE_PROCESSING_FAILED`.
+- A `Document` isn't JSON-serializable, so turn it into a dict with `model_dump()` (the instructor uses `.dict()`, which is deprecated in Pydantic v2).
+- ✅ Tested: my lecture `.txt` with `chunk_size=100` gave **260 chunks**, and `500` gave far fewer. The overlap is visible: the end of one chunk repeats at the start of the next.
+- Returning every chunk is **only for testing**. The real goal is to store them, not show them.
+- ⚠️ `metadata.source` shows the full server path (`/home/joox/...`). Fine for debugging, but in production it leaks server details.
+
+### Request flow
+```
+Postman POST {{api}}/api/v1/data/process/2   body: {"file_id": "...", "chunk_size": 500}
+   ▶ ProcessRequest (Pydantic)                    ── bad shape ▶ 422
+   ▶ ProcessController(project_id)                → project_path = assets/files/2/
+   ▶ get_file_content → get_file_loader           (.txt → TextLoader | .pdf → PyMuPDFLoader)
+        ── unsupported type ▶ 400 FILE_PROCESSING_FAILED
+   ▶ loader.load()                                → list[Document]
+   ▶ process_file_content                         → RecursiveCharacterTextSplitter
+   ▶ 200 + num_chunks + chunks
+```
+
+### 🐛 Bugs I hit
+| Error | Cause | Fix |
+|-------|-------|-----|
+| Postman `ECONNREFUSED 127.0.0.1:5000` | `from typing import Optional, optional`: `ImportError`, so uvicorn crashed on reload | `from typing import Optional`, then check the uvicorn terminal |
+| `404` on `/process/` | URL had no `project_id` | `{{api}}/api/v1/data/process/2` |
+| `ImportError: textloader` | Autocomplete picked a name that doesn't exist | `from langchain_community.document_loaders import TextLoader` |
+| `ImportError: ProcessingEnum` from langchain | It's **my** enum, not LangChain's | `from models import ProcessingEnum` only |
+| `FileNotFoundError` | Extra `"files"` in the path: `assets/files/2/files/x.txt` | `os.path.join(self.project_path, file_id)` |
+| `TypeError: unexpected keyword 'file_content'` | The method didn't accept it, and it loaded the file again by itself (twice) | The method takes `file_content`, the route loads once |
+| `NameError: file_chunks` | The variable is called `chunks` | Use `chunks` |
+| `422 model_attributes_type` | I duplicated the upload request, so the body was **form-data** with the file | Body → **raw → JSON** |
+| `500` on `/process/1` | The file is in project **2**. Folder `1/` got created empty, so `FileNotFoundError` | Use the right `project_id` |
+| `422 JSON decode error` | Pasted a response example (with `...`) into the request body | The body holds only what **you send** |
+
+- **Read the status code first:**
+  - `ECONNREFUSED` = the server is down. Look at the uvicorn terminal, not Postman.
+  - `404` = the server is up but the path is wrong.
+  - `422` = the body shape is wrong (schema).
+  - `500` = my bug. The traceback is in the terminal.
+
+### ⬜ TODO
+- [ ] Upload returns `file_id` (section 0)
+- [ ] File doesn't exist → `400` instead of `500` (check `os.path.exists` before `load()`)
+- [ ] Use `do_reset` (after the DB videos)
+- [ ] Don't return the full server path in `metadata.source`
