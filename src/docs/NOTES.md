@@ -9,6 +9,7 @@
 | 06 | `tut/003` | Nested Routes + Env Values |
 | 07 | `tut/004` | Project Structure + File Upload |
 | 08 | `tut/005` | File Processing (schema + loaders + chunking) |
+| 09 | `tut/006` | Docker + MongoDB + Motor (→ PyMongo Async) |
 
 > 💬 أي سطر بيبدأ بـ 💬 ده كومنت للفهم، مش من كلام الكورس.
 
@@ -299,9 +300,16 @@ FILE_ALLOWED_TYPES=["text/plain", "application/pdf"]
 FILE_MAX_SIZE_MB=10
 ```
 - Prefix related settings (`FILE_...`) so you know what belongs to what.
-- Check the **MIME type** (`file.content_type`), not the extension. Anyone can rename `virus.exe` to `cv.pdf`. MIME isn't perfect protection, but it's much better.
+- Check the **MIME type** (Multipurpose Internet Mail Extension), (`file.content_type`), not the extension. Anyone can rename `virus.exe` to `cv.pdf`. MIME isn't perfect protection, but it's much better.
 - `file.size` is in **bytes**, the setting is in **MB**: compare against `FILE_MAX_SIZE_MB * 1024 * 1024`.
 
+common Examples
+
+• text/html — An HTML web page
+• image/png — A Portable Network Graphics image
+• application/json — JSON data payload
+• audio/mpeg — MP3 audio file
+• video/mp4 — MP4 video file
 ### `BaseController` + inheritance
 - All controllers need the settings, so load them once in a parent class:
 ```python
@@ -384,7 +392,7 @@ src/assets/
     └── 5/         ← project_id = 5
         └── aB3x9Kq2LmPz_notes.txt
 ```
-- Each project gets its own folder (its own "tenant"). Files from different projects never mix.
+- Each project gets its own folder (its own "tenant"->  like tree). Files from different projects never mix.
 - `assets/.gitignore` with `files` makes git ignore the uploads. They're runtime data: they can be big or private, and every machine has different ones.
 - `files/` doesn't need to exist in git. `os.makedirs` creates it (and any missing parent) at runtime.
 
@@ -765,8 +773,156 @@ Postman POST {{api}}/api/v1/data/process/2   body: {"file_id": "...", "chunk_siz
   - `422` = the body shape is wrong (schema).
   - `500` = my bug. The traceback is in the terminal.
 
-### ⬜ TODO
-- [ ] Upload returns `file_id` (section 0)
+---
+
+## 🎬 mini-RAG | 09 | Docker - MongoDB - Motor · `tut/006`
+
+> 💬 **الفكرة في سطر:** هنخزّن الـ chunks في داتا بيز (MongoDB) بدل ما نرجّعها بس. MongoDB هتشتغل جوه Docker، والتطبيق يتصل بيها بمكتبة `pymongo` (النسخة async).
+
+### 📍 Where I stopped (2026-10-26)
+- [x] MongoDB service in `docker/docker-compose.yml` (image `mongo:9.0.4`) + `docker/.env`, `docker/.env.example`, `docker/.gitignore`
+- [x] Ran `docker compose up -d` from `docker/`
+- [x] Added `pymongo>=4.19.0` to `pyproject.toml` and re-exported `requirements.txt`
+- [x] `MONGO_URI` + `MONGO_DATABASE` added to `Settings` in `helpers/config.py`
+- [x] `main.py`: imported `AsyncMongoClient` + empty `startup` hook (**work in progress**, nothing connects yet)
+- [ ] Check Mongo really works (command in "Commands" below)
+- [ ] Fix `.env` (see "Bugs I hit")
+- [ ] Add `MONGO_URI` + `MONGO_DATABASE` to `src/.env.example`
+- [ ] Finish the connection in `main.py` (use `lifespan`, see below)
+- [ ] Schemas: `Project` and `DataChunk` (see "Next part of the lecture")
+
+### 1. Stateless vs stateful
+- **Stateless:** the app keeps nothing between requests. Every request is independent.
+- **Stateful:** the app keeps data (in a database) and reuses it later.
+- Not every project needs a database. It depends on the business need.
+- We need one: the chunks must be saved so we can reuse them later (embeddings, search) without processing the file again.
+> 💬 لحد دلوقتي الـ `/process` بيقطّع الملف ويرجّع الـ chunks وينسى. من غير داتا بيز كل مرة هنعيد الشغل من الأول.
+
+### 2. Why MongoDB?
+- The instructor didn't say "you must use Mongo". He said: ask yourself what makes it different from the alternatives, and learn that by asking (Google / an LLM), as a practice.
+- MongoDB is a **document** database (NoSQL). The other family is **relational** (SQL: MySQL, MariaDB, Postgres). Mongo's relatives: CouchDB and others.
+- My research (Oct 2026):
+  - MongoDB Community now has native **Search + Vector Search** (GA on 2026-06-30, runs through `mongot`, SSPL license). So Mongo can hold the data and the vectors.
+  - The other option is **PostgreSQL + pgvector**: SQL, relations, filtering with SQL. The instructor himself moves to Postgres + pgvector later (tut-013 / tut-014).
+  - No independent benchmark settled it. The pages I found were from the vendors.
+- **Decision for now:** follow the course with MongoDB. Revisit Postgres + pgvector later.
+> 💬 البيانات عندنا (project ← files ← chunks) علاقات ثابتة الشكل، وده بيناسب SQL. بس Mongo اختيار مقبول، وهو طريق الكورس دلوقتي.
+
+### 3. Docker is *how to run* Mongo, not an alternative to it
+- Two ways to install MongoDB: **(a)** install it directly on the machine, **(b)** run it with Docker. The instructor chose (b). (a) stays as a backup (mostly for Windows users).
+- Docker runs Mongo inside a **container**: an isolated little machine. Nothing is installed on my system.
+- Benefit: anyone runs `docker compose up -d` and gets the same setup. The same file moves to production later.
+- **Dockerfile** = how to build one service. **docker-compose** = run several services together from one file.
+> 💬 Docker مش بديل لـ Mongo. Mongo هي الداتا بيز، وDocker هو الصندوق اللي بتشتغل جواه.
+
+### 4. `docker-compose.yml`, line by line
+| Key | Meaning |
+|-----|---------|
+| `services: mongodb:` | The service name |
+| `image: mongo:9.0.4` | Ready-made image from Docker Hub. **Pin an exact tag** so it never changes by itself |
+| `container_name: mongodb` | A name to recognize the container |
+| `ports: "27007:27017"` | `host:container`. Mongo listens on `27017` inside. I reach it from my machine on `27007` (changed so it doesn't clash with another Mongo) |
+| `environment: MONGO_INITDB_ROOT_USERNAME / PASSWORD` | Creates the admin user on the **first** start only |
+| `volumes: ./mongodb:/data/db` | Mongo writes to `/data/db` inside. This maps it to my `docker/mongodb/` folder, so the data survives when the container is removed |
+| `healthcheck` | Docker pings Mongo every 10s. The status becomes `(healthy)` when it answers |
+| `networks: backend` | A private network for the services |
+| `restart: always` | If it fails, start again by itself |
+
+**What I changed vs the instructor's file** (he used `mongo:7-jammy`, no password):
+| Instructor | Mine | Why |
+|-----------|------|-----|
+| `mongo:7-jammy` | `mongo:9.0.4` | Latest on Docker Hub (I first wrote `mongo:8` without checking, my mistake) |
+| no password | user + password from `docker/.env` | Mongo without a password is open to anyone who reaches the port |
+| no healthcheck | healthcheck | So I (and later other services) can know it's ready |
+
+- `docker/.gitignore` ignores `mongodb/` (the data) and `.env` (the password). `docker/.env.example` is the committed copy with empty values.
+- The password in `docker/.env` is used only on the **first** start. Changing it later does nothing, because Mongo already saved the user. To change it: stop, delete `docker/mongodb/` (needs `sudo`, the container owns the files), start again.
+
+### 5. Commands (I use **fish**)
+```fish
+cd "<repo>/docker"
+docker compose up -d          # start in the background
+docker compose ps             # who is running, on which ports, healthy?
+docker compose down           # stop (data stays in ./mongodb)
+docker exec mongodb mongosh --quiet -u admin -p '<MONGO_PASSWORD from docker/.env>' --eval "db.version()"
+```
+- `docker compose up -d`: the `-d` (detach) runs it in the background, otherwise it dies when the terminal closes.
+- Same file name must be `docker-compose.yml` or `compose.yml`. For another name: `docker compose -f <file> up`.
+- GUI to look at the data: the instructor uses **Studio 3T**. **MongoDB Compass** is the official free one. Connection string: `mongodb://admin:<password>@localhost:27007`.
+
+### 6. Async, and why Motor → PyMongo Async
+- FastAPI is async. A normal (sync) driver would **block** the server while it waits for the database.
+- **Restaurant picture:** one waiter, ten tables. *Sync*: takes an order to the kitchen and **stands there** until the food is ready. *Async*: leaves the order, serves other tables, comes back when the kitchen calls.
+- `await` = "send the request and go serve someone else until the answer comes". `async def` = "this function may use `await`".
+- Async helps with **waiting** (database, network, files). It doesn't speed up heavy computation.
+- If a function calls `await`, it must be `async def`, and whoever calls it must `await` it too. That's why the models and routes become `async def`.
+- **New vs the course:** Motor (what the instructor installs) is **deprecated since 2025-05-14** in favor of the PyMongo Async API. Full support ends 2027-05-14 ([motor README](https://github.com/mongodb/motor)). So I use `pymongo` directly:
+```python
+# course (Motor)
+from motor.motor_asyncio import AsyncIOMotorClient
+# mine (PyMongo Async)
+from pymongo import AsyncMongoClient
+```
+- Small differences: iterate cursors with `async for`; `to_list(None)` (not `to_list(0)`); any call that touches the network needs `await`. ([migration guide](https://www.mongodb.com/docs/languages/python/pymongo-driver/reference/migration/))
+- ⚠️ Not verified: whether PyMongo officially supports server 9.0. I'll find out when I test the connection.
+
+### 7. `on_event` vs `lifespan`
+- The app has a life cycle: start, serve requests, stop. We open the DB connection **once** at start, share it with every request, and close it at stop (opening one per request is slow).
+- The instructor's way: `@app.on_event("startup")` and `@app.on_event("shutdown")`. FastAPI marks `on_event` as **deprecated** ([docs](https://fastapi.tiangolo.com/advanced/events/?h=lifespan)).
+- The modern way: `lifespan`. Code before `yield` runs at start, code after it runs at stop:
+```python
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from pymongo import AsyncMongoClient
+from helpers.config import get_settings
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    app.mongo_conn = AsyncMongoClient(settings.MONGO_URI)
+    app.db_client = app.mongo_conn[settings.MONGO_DATABASE]
+    yield
+    await app.mongo_conn.close()
+
+app = FastAPI(lifespan=lifespan)
+```
+- You can't mix them: with `lifespan`, the `on_event` functions never run.
+- Any route reaches the database with `request.app.db_client`.
+> 💬 `await ...close()` مش متأكد منها 100%. لو ظهر تحذير `coroutine was never awaited` يبقى محتاجة `await`.
+
+### 8. Settings
+- Names I used (instructor's are `MONGODB_URL` / `MONGODB_DATABASE`):
+```env
+MONGO_URI="mongodb://admin:<password>@localhost:27007"
+MONGO_DATABASE="mini-rag"
+```
+```python
+# helpers/config.py
+MONGO_URI: str
+MONGO_DATABASE: str
+```
+- Every new variable goes in `.env` **and** `.env.example`, and a field in `Settings`.
+
+### 9. Next part of the lecture (not done yet)
+- **Collection** = like a table, but it accepts any shape of document. Mongo doesn't force a schema, so we force one in our code (the Pydantic schemes).
+- Plan: one collection for `projects`, one for `chunks`, each with its own scheme in `models/db_schemes/`.
+- `Project`: `id` (Mongo `_id`, optional because it's created by Mongo), `project_id` (min length 1, alphanumeric only, custom validator).
+- `DataChunk`: `id`, `chunk_text`, `chunk_metadata` (dict), `chunk_order` (> 0), `chunk_project_id` (an `ObjectId` that points to the project).
+- `ObjectId` is a Mongo type. Pydantic doesn't know it, so we need `arbitrary_types_allowed = True` in `Config`.
+- ⚠️ Pydantic v2 (what I have) changed things vs the course: `@validator` → `@field_validator`, `.dict()` → `.model_dump()`.
+
+### 🐛 Bugs I hit
+| Error | Cause | Fix |
+|-------|-------|-----|
+| fish: `Expected a string, but found a redirection` | I pasted a bash command with `<<'EOF'` (heredoc) in **fish**, which doesn't support it | Create the file with an editor, or run the command inside `bash`, or use `printf` |
+| Folder named `docker ` (space at the end) | Typo when creating it | Rename it. Avoid spaces in folder names |
+| Wrote `mongo:8` but the latest is `9.0.4` | Picked the tag without checking Docker Hub | Pin `mongo:9.0.4` (not `latest`, it changes by itself) |
+| `.env` has `MONG_DATABASE` but `Settings` expects `MONGO_DATABASE` | Typo (missing `O`) | Rename it in `.env`, otherwise Pydantic raises a `ValidationError` at startup |
+| `.env` has `MONGO_URI=mongodb://localhost:27017` (from my dictation) | Instructor's default | Ours is port `27007` + user and password |
+- Mongo data folder is owned by the container, so deleting it needs `sudo rm -rf docker/mongodb`.
+
+### ⬜ TODO carried from video 08
+- [ ] Upload returns `file_id` (section 0 of video 08)
 - [ ] File doesn't exist → `400` instead of `500` (check `os.path.exists` before `load()`)
-- [ ] Use `do_reset` (after the DB videos)
+- [ ] Use `do_reset` (it matters once chunks are stored in the DB)
 - [ ] Don't return the full server path in `metadata.source`
