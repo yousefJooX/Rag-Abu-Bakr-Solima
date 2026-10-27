@@ -779,17 +779,18 @@ Postman POST {{api}}/api/v1/data/process/2   body: {"file_id": "...", "chunk_siz
 
 > 💬 **الفكرة في سطر:** هنخزّن الـ chunks في داتا بيز (MongoDB) بدل ما نرجّعها بس. MongoDB هتشتغل جوه Docker، والتطبيق يتصل بيها بمكتبة `pymongo` (النسخة async).
 
-### 📍 Where I stopped (2026-10-26)
+### 📍 Where I stopped (2026-10-27)
 - [x] MongoDB service in `docker/docker-compose.yml` (image `mongo:9.0.4`) + `docker/.env`, `docker/.env.example`, `docker/.gitignore`
 - [x] Ran `docker compose up -d` from `docker/`
 - [x] Added `pymongo>=4.19.0` to `pyproject.toml` and re-exported `requirements.txt`
 - [x] `MONGO_URI` + `MONGO_DATABASE` added to `Settings` in `helpers/config.py`
-- [x] `main.py`: imported `AsyncMongoClient` + empty `startup` hook (**work in progress**, nothing connects yet)
-- [ ] Check Mongo really works (command in "Commands" below)
-- [ ] Fix `.env` (see "Bugs I hit")
+- [x] `main.py`: connection written with `on_event` startup/shutdown (**4 bugs, the app can't start yet, see "Bugs I hit"**)
+- [x] Schemes written: `models/db_schemes/project.py` and `data_chunk.py` (work, but use old Pydantic v1 style)
+- [ ] Fix the 4 bugs in `main.py`, then move to `lifespan` (section 7)
+- [ ] Fix `src/.env`: `MONG_DATABASE` → `MONGO_DATABASE`
 - [ ] Add `MONGO_URI` + `MONGO_DATABASE` to `src/.env.example`
-- [ ] Finish the connection in `main.py` (use `lifespan`, see below)
-- [ ] Schemas: `Project` and `DataChunk` (see "Next part of the lecture")
+- [ ] Check Mongo really works (command in "Commands" below)
+- [ ] Next in the lecture: model classes that use the schemes and talk to the DB (section 11)
 
 ### 1. Stateless vs stateful
 - **Stateless:** the app keeps nothing between requests. Every request is independent.
@@ -888,7 +889,7 @@ app = FastAPI(lifespan=lifespan)
 ```
 - You can't mix them: with `lifespan`, the `on_event` functions never run.
 - Any route reaches the database with `request.app.db_client`.
-> 💬 `await ...close()` مش متأكد منها 100%. لو ظهر تحذير `coroutine was never awaited` يبقى محتاجة `await`.
+> 💬 الـ `await` قبل `close()` لازم. اتأكدت (2026-10-27، pymongo 4.19.0): `AsyncMongoClient.close` coroutine. من غير `await` الاتصال مش بيتقفل ويظهر تحذير `coroutine was never awaited`.
 
 ### 8. Settings
 - Names I used (instructor's are `MONGODB_URL` / `MONGODB_DATABASE`):
@@ -903,13 +904,122 @@ MONGO_DATABASE: str
 ```
 - Every new variable goes in `.env` **and** `.env.example`, and a field in `Settings`.
 
-### 9. Next part of the lecture (not done yet)
-- **Collection** = like a table, but it accepts any shape of document. Mongo doesn't force a schema, so we force one in our code (the Pydantic schemes).
-- Plan: one collection for `projects`, one for `chunks`, each with its own scheme in `models/db_schemes/`.
-- `Project`: `id` (Mongo `_id`, optional because it's created by Mongo), `project_id` (min length 1, alphanumeric only, custom validator).
-- `DataChunk`: `id`, `chunk_text`, `chunk_metadata` (dict), `chunk_order` (> 0), `chunk_project_id` (an `ObjectId` that points to the project).
-- `ObjectId` is a Mongo type. Pydantic doesn't know it, so we need `arbitrary_types_allowed = True` in `Config`.
-- ⚠️ Pydantic v2 (what I have) changed things vs the course: `@validator` → `@field_validator`, `.dict()` → `.model_dump()`.
+### 9. The connection: `mongo_conn`, `db_client`, collection
+Three levels. Think of a school: the **building** → a **classroom** → a **table inside it**.
+```python
+app.mongo_conn = AsyncMongoClient(settings.MONGO_URI)          # 1. the client: connection to the Mongo SERVER
+app.db_client  = app.mongo_conn[settings.MONGO_DATABASE]       # 2. one DATABASE inside it ("mini-rag")
+projects       = app.db_client["projects"]                     # 3. one COLLECTION inside the database
+```
+| Level | Mongo word | SQL word | In our code |
+|-------|-----------|----------|-------------|
+| 1 | client (connection) | DB server | `app.mongo_conn` |
+| 2 | database | database | `app.db_client` |
+| 3 | collection | table | `db_client["projects"]`, `db_client["chunks"]` |
+| 4 | document | row | one project, or one chunk (JSON-like, stored as BSON) |
+
+- **Why store them on `app`?** We open the connection **once** at startup and every route shares it: `request.app.db_client`. Opening one per request is slow.
+- **Why two names?** We keep `mongo_conn` because we need it at shutdown (`close()`). We use `db_client` for the work. 💬 The name `db_client` is misleading: it is the **database**, not a client. Same for the instructor's name. Fine for the course, but `db` would be clearer.
+- Creating the client doesn't touch the network. I tested `AsyncMongoClient("mongodb://localhost:27007")` with no server running and it didn't fail. Getting the database and the collection (`[...]`) is also instant and needs no `await`. Only real operations (insert, find...) use `await`.
+- A collection is created automatically the first time we insert into it. No `CREATE TABLE`.
+- Optional, to fail fast at startup if Mongo is down or the password is wrong: `await app.mongo_conn.admin.command("ping")` after creating the client.
+> 💬 `mongo_conn` = الاتصال بالسيرفر. `db_client` = الداتا بيز نفسها. الـ collection = زي الجدول. والـ document = زي الصف.
+
+### 10. Startup and shutdown: my code now vs the fix
+What I wrote (`main.py`):
+```python
+@app.on_event("startup")
+async def startup_db_client():
+    settings = get_settings()
+    app.mongo_conn = AsyncMongoClient(settings.MONGO_URI)
+    app.db_client = app.mongo_conn[settings.MONGODB_DATABASE]   # bug 1
+@app.on_event("shutdwon")                                       # bug 2
+async def startup_db_client():                                  # bug 3
+    app.mongo_conn.close()                                      # bug 4
+```
+| # | Problem | Result | Fix |
+|---|---------|--------|-----|
+| 1 | `MONGODB_DATABASE` is the **instructor's** name. My `Settings` field is `MONGO_DATABASE` | `AttributeError` when the app starts | `settings.MONGO_DATABASE` |
+| 2 | `"shutdwon"` is a typo | FastAPI only accepts `"startup"` / `"shutdown"`. I tested it: `AssertionError` when the file is imported, so the app **doesn't even start** | `"shutdown"` |
+| 3 | Second function has the same name as the first | Python rebinds the name. Not a crash, but confusing | Name it `shutdown_db_client` |
+| 4 | `close()` is a coroutine in PyMongo Async | Never runs: the connection is not closed | `await app.mongo_conn.close()` |
+
+The version with `on_event` fixed (course style):
+```python
+@app.on_event("startup")
+async def startup_db_client():
+    settings = get_settings()
+    app.mongo_conn = AsyncMongoClient(settings.MONGO_URI)
+    app.db_client = app.mongo_conn[settings.MONGO_DATABASE]
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    await app.mongo_conn.close()
+```
+- `on_event` still works but FastAPI prints a `DeprecationWarning`. The better version is `lifespan` (section 7). It also removes bugs 2 and 3 for free, because there is only **one** function.
+- Why the rule "open at startup, close at shutdown"? A connection holds sockets and memory. If we never close it, the server keeps them until the process dies.
+
+### 11. Schemes: force a shape on documents (`models/db_schemes/`)
+- Mongo accepts **any** shape in a collection. We don't want that, so Pydantic checks the shape in our code **before** we save.
+- **MVC reminder:** everything about the data lives in `models/` (the **M**). It has `enums/` (constants: `ProcessingEnum`, `ResponseSignal`) and `db_schemes/` (the shape of a document). Next come model classes with the DB operations (insert, find). 💬 هنوصل للجزء ده في الدرس الجاي، ده تخطيط مني مش من الكورس.
+
+What I wrote:
+```python
+# models/db_schemes/project.py
+class Project(BaseModel):
+    id: Optional[ObjectId] = Field(None, alias="_id")
+    project_id: str = Field(..., min_length=1)
+
+    @validator('project_id')
+    def validate_project_id(cls, value):
+        if not value.isalnum():
+            raise ValueError('project_id must be alphanumeric')
+        return value
+
+    class Config:
+        arbitrary_types_allowed = True
+
+# models/db_schemes/data_chunk.py
+class DataChunk(BaseModel):
+    id: Optional[ObjectId] = Field(None, alias="_id")
+    chunk_text: str = Field(..., min_length=1)
+    chunk_metadata: dict
+    chunk_order: int = Field(..., gt=0)
+    chunk_project_id: ObjectId
+    class Config:
+        arbitrary_types_allowed = True
+```
+Line by line:
+| Piece | Meaning |
+|-------|---------|
+| `id: Optional[ObjectId] = Field(None, alias="_id")` | Mongo calls the id `_id`. Pydantic doesn't allow field names that start with `_`, so we name it `id` and `alias` maps it. `Optional` because **Mongo creates it** when we insert |
+| `ObjectId` | Mongo's own id type (12 bytes). Pydantic doesn't know it → `arbitrary_types_allowed` |
+| `project_id` (str) | The id **the user sends** in the URL (`/upload/abc123`). Alphanumeric only |
+| `chunk_project_id` (ObjectId) | The **`_id`** of the project document. This is the link chunk → project, like a foreign key in SQL |
+| `min_length=1`, `gt=0` | Not empty / bigger than 0 (`chunk_order` starts at 1) |
+| `chunk_metadata: dict` | Free-shape dict (page number, source...) |
+
+- Two different ids: `project_id` = readable id from the user. `_id` = Mongo's. Chunks point to the **`_id`**.
+- To insert, let Mongo create the id: `project.model_dump(by_alias=True, exclude_none=True)`. I tested it: the output has no `_id` when `id` is `None`.
+- `isalnum()` also accepts Arabic letters (`"مشروع1"` passes), and rejects spaces and `-`. Good for a legal RAG in Arabic, but it means "alphanumeric" is not "ASCII only".
+- ⚠️ **Pydantic v2 migration** (tested with Pydantic 2.14.1, both give a `DeprecationWarning`, code still works until v3):
+```python
+from pydantic import BaseModel, Field, field_validator, ConfigDict
+
+class Project(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)     # replaces class Config
+
+    id: Optional[ObjectId] = Field(None, alias="_id")
+    project_id: str = Field(..., min_length=1)
+
+    @field_validator("project_id")                              # replaces @validator
+    @classmethod
+    def validate_project_id(cls, value: str) -> str:
+        if not value.isalnum():
+            raise ValueError("project_id must be alphanumeric")
+        return value
+```
+- Small cleanups: remove the unused `validator` import from `data_chunk.py`, and end every file with an empty line (`__init__.py` too).
 
 ### 🐛 Bugs I hit
 | Error | Cause | Fix |
@@ -919,7 +1029,81 @@ MONGO_DATABASE: str
 | Wrote `mongo:8` but the latest is `9.0.4` | Picked the tag without checking Docker Hub | Pin `mongo:9.0.4` (not `latest`, it changes by itself) |
 | `.env` has `MONG_DATABASE` but `Settings` expects `MONGO_DATABASE` | Typo (missing `O`) | Rename it in `.env`, otherwise Pydantic raises a `ValidationError` at startup |
 | `.env` has `MONGO_URI=mongodb://localhost:27017` (from my dictation) | Instructor's default | Ours is port `27007` + user and password |
+| `main.py` uses `settings.MONGODB_DATABASE` | I mixed the instructor's variable name with mine | `settings.MONGO_DATABASE`. When I rename something, search the whole project for the old name |
+| `@app.on_event("shutdwon")` → `AssertionError` at import | Typo | `"shutdown"` |
+| `app.mongo_conn.close()` does nothing | `close()` is a coroutine in PyMongo Async | `await app.mongo_conn.close()` |
 - Mongo data folder is owned by the container, so deleting it needs `sudo rm -rf docker/mongodb`.
+
+---
+
+### 📖 Glossary (video 09)
+| Term | Definition |
+|------|-----------|
+| **Stateless / stateful** | Stateless: the app keeps nothing between requests. Stateful: it keeps data in a database and reuses it |
+| **Document database** | A database that stores JSON-like documents instead of table rows (MongoDB) |
+| **Client (`mongo_conn`)** | The object that holds the connection to the Mongo server |
+| **Database (`db_client`)** | A named group of collections inside the server (`mini-rag`) |
+| **Collection** | A group of documents. The table of MongoDB. No fixed schema |
+| **Document** | One record in a collection (one project, one chunk) |
+| **`_id` / `ObjectId`** | Mongo's own unique id for a document, and its type |
+| **Scheme (schema)** | A Pydantic class that forces the shape of a document in our code |
+| **Container** | An isolated process (Mongo) run by Docker, with its own filesystem |
+| **`lifespan`** | FastAPI's modern way to run code at app start (before `yield`) and stop (after) |
+
+### ⚡ Reference block
+```python
+# connect (lifespan)
+app.mongo_conn = AsyncMongoClient(settings.MONGO_URI)      # server
+app.db_client  = app.mongo_conn[settings.MONGO_DATABASE]   # database
+await app.mongo_conn.close()                               # at shutdown, WITH await
+col = request.app.db_client["projects"]                    # collection, inside a route
+
+# schemes (Pydantic v2)
+id: Optional[ObjectId] = Field(None, alias="_id")          # Mongo creates it
+doc = obj.model_dump(by_alias=True, exclude_none=True)     # dict ready to insert
+```
+```fish
+cd docker; docker compose up -d     # start Mongo
+docker compose ps                   # healthy?
+docker compose down                 # stop (data stays in ./mongodb)
+```
+Connection string: `mongodb://admin:<password>@localhost:27007`
+
+### 🧠 Retrieval questions
+Answer from memory first, then open the answer.
+
+1. What are the three levels between my app and one stored chunk? Which variable holds each?
+<details><summary>Answer</summary>Server → database → collection. `app.mongo_conn` (client to the server), `app.db_client` (the database), `db_client["chunks"]` (the collection). Then one document inside it.</details>
+
+2. Why does `app.mongo_conn.close()` (no `await`) not close anything in PyMongo Async?
+<details><summary>Answer</summary>`close()` is a coroutine. Calling it only creates the coroutine object, it never runs. It needs `await`.</details>
+
+3. Why is `id` `Optional` and why `alias="_id"`?
+<details><summary>Answer</summary>Mongo creates the id when we insert, so it is empty before that. Mongo's field is named `_id`, and Pydantic doesn't allow field names starting with `_`, so `id` is mapped to it with `alias`.</details>
+
+4. (Video 08) Why do we split documents into chunks before storing them?
+<details><summary>Answer</summary>Sending whole documents to the LLM is slow, expensive, and can pass its token limit. Small chunks give cheaper, faster, more precise answers, and later become embeddings in a vector DB.</details>
+
+5. (Video 07) What does `Depends(get_settings)` do for a route?
+<details><summary>Answer</summary>FastAPI calls `get_settings()` and passes the result into the route, so the route depends on the settings and the config loads from one place.</details>
+
+6. `chunk_project_id` is an `ObjectId`, not the string `project_id`. Why?
+<details><summary>Answer</summary>It points to the project's Mongo `_id`, like a foreign key. `project_id` is the readable id from the user.</details>
+
+### 📝 Learning record
+- **Mistake pattern:** I used the instructor's name (`MONGODB_DATABASE`) in one place and mine (`MONGO_DATABASE`) in another. Fix: when I rename a variable, search the whole project for the old name. The same typo happened in `.env` (`MONG_DATABASE`).
+- **Typos in strings are silent until runtime.** `"shutdwon"` looks fine to the eye. A test (or just running the app) catches it in seconds.
+- **Lazy connection:** creating `AsyncMongoClient` doesn't prove Mongo works. Run the `ping` check or a real query.
+- **Not verified yet:** whether PyMongo officially supports MongoDB server 9.0. Will see when I test the real connection.
+- **To revise:** the difference between `project_id` and `_id`. It comes back when I write `ProjectModel` (find or create a project by `project_id`).
+- **Study next:** model classes with `insert_one` / `find_one` using `await`; `async for` on cursors; a unique index on `project_id`.
+
+### 📚 Sources
+- [PyMongo Async migration guide](https://www.mongodb.com/docs/languages/python/pymongo-driver/reference/migration/)
+- [FastAPI lifespan events](https://fastapi.tiangolo.com/advanced/events/)
+- [Pydantic V2 migration guide](https://errors.pydantic.dev/2.14/migration/)
+- [Motor README (deprecation)](https://github.com/mongodb/motor)
+- My own tests (2026-10-27, pymongo 4.19.0, pydantic 2.14.1): `close()` is a coroutine; `"shutdwon"` raises `AssertionError`; the schemes work and warn.
 
 ### ⬜ TODO carried from video 08
 - [ ] Upload returns `file_id` (section 0 of video 08)
