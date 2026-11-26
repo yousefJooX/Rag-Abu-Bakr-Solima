@@ -25,10 +25,18 @@ class ProcessController(BaseController):
     def  get_file_loader(self , file_id: str):
         """Choose a LangChain loader for UTF-8 text or PDF files.
 
-        Return None for unsupported extensions so the route can reject the file.
+        Return None if the file is missing from the project or has an
+        unsupported extension so the route can reject the request.
         """
+        if os.path.basename(file_id) != file_id:
+            return None
+
+        project_path = os.path.realpath(self.project_path)
+        file_path = os.path.realpath(os.path.join(project_path, file_id))
+        if os.path.dirname(file_path) != project_path or not os.path.isfile(file_path):
+            return None
+
         file_extension = self.get_file_extension(file_id = file_id)
-        file_path = os.path.join(self.project_path, file_id)
 
         if file_extension == ProcessingEnum.TXT.value:
             return TextLoader(file_path, encoding="utf-8")
@@ -39,7 +47,7 @@ class ProcessController(BaseController):
     def get_file_content(self, file_id: str):
         """Load the file into LangChain documents with text and metadata.
 
-        Return None when the file extension has no supported loader.
+        Return None when the project has no supported file with this ID.
         """
         loader = self.get_file_loader(file_id=file_id)
         if loader is None:
