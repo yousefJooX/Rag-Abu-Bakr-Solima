@@ -1073,3 +1073,29 @@ Connection string: `mongodb://admin:<password>@localhost:27007`
 
 he we go ahain  motherfucker  after  3  weeks  or  4 i forget every thing  i make  it  os  i take  2  days  to rev  all  my  code and  what  i  make  againn
 in
+
+### Checkpoint — November 26, 2026
+
+- **My branch** `tut/007`
+- **Course reference** [instructor branch `tut-007`](https://github.com/bakrianoo/mini-rag/tree/tut-007) at [`e1b17c8`](https://github.com/bakrianoo/mini-rag/tree/e1b17c8dc4abd5673e98b23a810b1d9dd86c95d8). The exact point in the lesson is still to be confirmed before comparing implementations.
+
+#### What works
+
+1. Start Uvicorn from `src/`, where `main.py` and the app's local `.env` live.
+2. FastAPI can authenticate to the running MongoDB container at `localhost:27007`. The app uses `mini-rag`, and the MongoDB account authenticates against `admin`. Studio 3T connected and showed `mini-rag → projects`.
+3. Postman returned `200` for `POST /api/v1/data/upload/1`. Keep the exact `file_id` returned by that request and the same URL `project_id` for processing.
+4. The process route loads and splits the file, maps chunks to `DataChunk` records using the project's MongoDB `_id`, and calls `ChunkModel.insert_chunks_bulk()` before responding with `inserted_chunks`. TXT processing and batch writes passed with a MongoDB test double.
+
+#### Problems and fixes
+
+- Uvicorn failed to import `main` when started from the repository root. Running it from `src/` fixed the import.
+- MongoDB returned code `13` with missing credentials, then code `18` with credentials that differed from the running container's account. Updating the ignored `src/.env` to use the working account and reloading Uvicorn fixed the authenticated project query.
+- The process route had two parameters named `request`. It now uses `Request` for the app's database handle and `ProcessRequest` for the JSON body. The bulk insert method's invalid multiline comment and the unreachable save block were also fixed.
+- The screenshot shows a file uploaded to project `1` and then processed through `/process/2`. The exact upload ID exists under project `1` only. A read-only check against that file loaded **37 PDF pages** and produced **24 chunks** with `chunk_size=500` and `overlap_size=20`.
+
+#### Where to resume
+
+1. In Postman, send `POST /api/v1/data/process/1` with the `file_id` from the upload to project `1` and `"chunk_size": 500`. Verify `inserted_chunks` in the response and confirm the rows in `mini-rag → chunks` in Studio 3T. The PDF split was checked locally. The HTTP request that writes its chunks to the live database is still to be verified.
+2. Review the saved Postman requests. The screenshots show a `[CONFLICT]` tab and stored request labels marked `GET`, while the requests in use were `POST`.
+3. Compare the project, chunk, and asset flow against the pinned instructor branch once the lesson timestamp is known. Current chunks are linked by `chunk_project_id`. File or asset linking and `do_reset` are still pending. Reprocessing a file currently adds another set of chunks.
+4. Check the Docker Compose credentials before recreating MongoDB. The current Compose file reads both root credential fields from the same environment variable. The running container and its existing volume already have a working account. Both local `.env` files are ignored by Git.
