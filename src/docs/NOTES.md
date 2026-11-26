@@ -1069,44 +1069,7 @@ docker compose down                 # stop (data stays in ./mongodb)
 ```
 Connection string: `mongodb://admin:<password>@localhost:27007`
 
-### 🧠 Retrieval questions
-Answer from memory first, then open the answer.
+##  mini-RAG | 10 | Mongo Schemes and Models
 
-1. What are the three levels between my app and one stored chunk? Which variable holds each?
-<details><summary>Answer</summary>Server → database → collection. `app.mongo_conn` (client to the server), `app.db_client` (the database), `db_client["chunks"]` (the collection). Then one document inside it.</details>
-
-2. Why does `app.mongo_conn.close()` (no `await`) not close anything in PyMongo Async?
-<details><summary>Answer</summary>`close()` is a coroutine. Calling it only creates the coroutine object, it never runs. It needs `await`.</details>
-
-3. Why is `id` `Optional` and why `alias="_id"`?
-<details><summary>Answer</summary>Mongo creates the id when we insert, so it is empty before that. Mongo's field is named `_id`, and Pydantic doesn't allow field names starting with `_`, so `id` is mapped to it with `alias`.</details>
-
-4. (Video 08) Why do we split documents into chunks before storing them?
-<details><summary>Answer</summary>Sending whole documents to the LLM is slow, expensive, and can pass its token limit. Small chunks give cheaper, faster, more precise answers, and later become embeddings in a vector DB.</details>
-
-5. (Video 07) What does `Depends(get_settings)` do for a route?
-<details><summary>Answer</summary>FastAPI calls `get_settings()` and passes the result into the route, so the route depends on the settings and the config loads from one place.</details>
-
-6. `chunk_project_id` is an `ObjectId`, not the string `project_id`. Why?
-<details><summary>Answer</summary>It points to the project's Mongo `_id`, like a foreign key. `project_id` is the readable id from the user.</details>
-
-### 📝 Learning record
-- **Mistake pattern:** I used the instructor's name (`MONGODB_DATABASE`) in one place and mine (`MONGO_DATABASE`) in another. Fix: when I rename a variable, search the whole project for the old name. The same typo happened in `.env` (`MONG_DATABASE`).
-- **Typos in strings are silent until runtime.** `"shutdwon"` looks fine to the eye. A test (or just running the app) catches it in seconds.
-- **Lazy connection:** creating `AsyncMongoClient` doesn't prove Mongo works. Run the `ping` check or a real query.
-- **Not verified yet:** whether PyMongo officially supports MongoDB server 9.0. Will see when I test the real connection.
-- **To revise:** the difference between `project_id` and `_id`. It comes back when I write `ProjectModel` (find or create a project by `project_id`).
-- **Study next:** model classes with `insert_one` / `find_one` using `await`; `async for` on cursors; a unique index on `project_id`.
-
-### 📚 Sources
-- [PyMongo Async migration guide](https://www.mongodb.com/docs/languages/python/pymongo-driver/reference/migration/)
-- [FastAPI lifespan events](https://fastapi.tiangolo.com/advanced/events/)
-- [Pydantic V2 migration guide](https://errors.pydantic.dev/2.14/migration/)
-- [Motor README (deprecation)](https://github.com/mongodb/motor)
-- My own tests (2026-10-27, pymongo 4.19.0, pydantic 2.14.1): `close()` is a coroutine; `"shutdwon"` raises `AssertionError`; the schemes work and warn.
-
-### ⬜ TODO carried from video 08
-- [ ] Upload returns `file_id` (section 0 of video 08)
-- [ ] File doesn't exist → `400` instead of `500` (check `os.path.exists` before `load()`)
-- [ ] Use `do_reset` (it matters once chunks are stored in the DB)
-- [ ] Don't return the full server path in `metadata.source`
+he we go ahain  motherfucker  after  3  weeks  or  4 i forget every thing  i make  it  os  i take  2  days  to rev  all  my  code and  what  i  make  againn
+in

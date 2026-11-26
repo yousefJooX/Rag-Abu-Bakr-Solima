@@ -1,3 +1,5 @@
+"""Create the FastAPI app and register its routes."""
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -9,6 +11,11 @@ from routes import base, data
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Make MongoDB available while the app runs and close the client on shutdown.
+
+    Store the client and selected database on the app before it starts serving
+    requests so database operations can share the same client.
+    """
     settings = get_settings()
     mongo_conn = AsyncMongoClient(settings.MONGO_URI)
     try:

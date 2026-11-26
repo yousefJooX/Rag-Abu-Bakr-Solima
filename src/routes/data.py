@@ -1,37 +1,59 @@
-from fastapi import APIRouter , Depends , UploadFile, status
-from fastapi.responses import JSONResponse
-import os  
-from helpers.config import get_settings , Settings
-from controllers  import DataController , ProjectController , ProcessController
+"""Expose endpoints to upload and process a project's files."""
+
+import logging
+from typing import Annotated
+
 import aiofiles
-from  models import ResponseSignal
-import  logging
+from fastapi import APIRouter, Depends, Request, UploadFile, status
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
+
+from controllers import DataController, ProcessController
+from helpers.config import Settings, get_settings
+from models import ResponseSignal
+from models.ProjectModel import ProjectModel
+
 from .schemes.data import ProcessRequest
+
 logger = logging.getLogger('uvicorn.error')
 data_router = APIRouter(
     prefix="/api/v1/data",
     tags=["api_v1", "data"],
 )
 
+
 @data_router.post("/upload/{project_id}")
-async def upload_data(project_id: str,file: UploadFile, 
-                      app_settings: Settings = Depends(get_settings)):
-    # validate file extension &  size   we can do the logic here but abobaker have another apporoch 
-    # and do it inside the controller  make all  logic for the data
+async def upload_data(
+    request: Request,
+    project_id: str,
+    file: UploadFile,
+    app_settings: Annotated[Settings, Depends(get_settings)],
+):
+    """Save a file under its project and return the identifiers needed for processing."""
     data_controller = DataController()
 
-    is_valid ,result_signal= data_controller.validate_uploaded_file(file=file)
+    is_valid, result_signal = data_controller.validate_uploaded_file(file=file)
     if not is_valid:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"signal": result_signal}
         )
-    project_path = ProjectController().get_project_path(project_id=project_id)
-    file_path, file_id = data_controller.generate_unique_filepath(
-        orig_file_name=file.filename,
-        project_id=project_id
-    )
+
+    project_model = ProjectModel(db_client=request.app.db_client)
     try:
+        project = await project_model.get_project_or_create_one(project_id)
+    except ValidationError:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"signal": ResponseSignal.PROJECT_ID_INVALID.value},
+        )
+
+    try:
+        file_path, file_id = data_controller.generate_unique_filepath(
+            orig_file_name=file.filename,
+            project_id=project.project_id,
+        )
+        # Copy the upload in blocks so memory use stays bounded while writing.
         async with aiofiles.open(file_path, "wb") as f:
             while chunk := await file.read(app_settings.FILE_DEFAULT_CHUNK_SIZE):
                 await f.write(chunk)
@@ -47,10 +69,18 @@ async def upload_data(project_id: str,file: UploadFile,
         )
 
     return JSONResponse(
-        content={"signal": ResponseSignal.FILE_UPLOADED_SUCCESSFULLY.value}
+        content={
+            "signal": ResponseSignal.FILE_UPLOADED_SUCCESSFULLY.value,
+            "file_id": file_id,
+            "project_id": project.project_id,
+            "mongo_project_id": str(project.id),
+        }
     )
+
+
 @data_router.post("/process/{project_id}")
 async def process_endpoint(project_id: str, request: ProcessRequest):
+    """Load a saved file, split its text, and return the chunks and metadata."""
     file_id = request.file_id
     chunk_size = request.chunk_size
     overlap_size = request.overlap_size

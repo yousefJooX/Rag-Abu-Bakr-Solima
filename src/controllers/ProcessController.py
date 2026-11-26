@@ -1,3 +1,5 @@
+"""Load saved files and split their text into smaller documents for RAG."""
+
 from .BaseController import BaseController
 from .ProjectController import ProjectController
 import os
@@ -8,17 +10,23 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
 class ProcessController(BaseController):
+    """Read and chunk files from a single project's upload folder."""
+
     def __init__(self, project_id: str):
+        """Set up processing with the storage path for the given project ID."""
         super().__init__()
         self.project_id = project_id
         self.project_path = ProjectController().get_project_path(project_id=project_id)
 
     def get_file_extension(self, file_id: str) -> str:
-        """Get the file extension from the file name."""
+        """Return the suffix, such as .pdf, used to select a file loader."""
         return os.path.splitext(file_id)[-1]
 
     def  get_file_loader(self , file_id: str):
-        """Get the appropriate file loader based on the file extension."""
+        """Choose a LangChain loader for UTF-8 text or PDF files.
+
+        Return None for unsupported extensions so the route can reject the file.
+        """
         file_extension = self.get_file_extension(file_id = file_id)
         file_path = os.path.join(self.project_path, file_id)
 
@@ -26,21 +34,28 @@ class ProcessController(BaseController):
             return TextLoader(file_path, encoding="utf-8")
         elif file_extension == ProcessingEnum.PDF.value:
             return PyMuPDFLoader(file_path)
-        return None  # unsupported extension -> the route returns 400
+        return None
 
     def get_file_content(self, file_id: str):
-        """Get the content of the file using the appropriate loader."""
+        """Load the file into LangChain documents with text and metadata.
+
+        Return None when the file extension has no supported loader.
+        """
         loader = self.get_file_loader(file_id=file_id)
         if loader is None:
             return None
-        return loader.load() # list of object document
+        return loader.load()
 
     def  process_file_content(self,
                             file_content: list,
                             file_id: str,
                             chunk_size: int = 100,
                             overlap_size: int = 20):
-        """Process the file content by splitting it into chunks."""
+        """Split loaded documents into overlapping chunks measured in characters.
+
+        Overlap carries context across chunk boundaries. Each chunk keeps the
+        source document's metadata so it can be traced back to its source.
+        """
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=overlap_size,
