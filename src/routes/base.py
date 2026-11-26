@@ -1,3 +1,5 @@
+"""Expose basic information about the running API."""
+
 from fastapi import APIRouter , Depends
 
 import os  
@@ -10,10 +12,8 @@ base_router = APIRouter(
 
 
 @base_router.get("/")
-async  def welcome(app_settings: Settings = Depends(get_settings)): #  make it  more efficient by using Depends to inject the settings dependency into the route handler
-
-    #app_settings = get_settings()
-
+async  def welcome(app_settings: Settings = Depends(get_settings)):
+    """Return a welcome message and app version from the injected settings."""
     app_name = app_settings.APP_NAME
     app_version = app_settings.APP_VERSION
     author = app_settings.AUTHOR

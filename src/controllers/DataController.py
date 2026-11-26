@@ -1,3 +1,5 @@
+"""Validate uploads and choose where to store them on disk."""
+
 from models import ResponseSignal
 from .ProjectController import ProjectController    
 from  .BaseController import BaseController
@@ -5,14 +7,18 @@ from fastapi import UploadFile
 import  re
 import os
 class DataController(BaseController):
+    """Apply upload limits and give each accepted file a storage path."""
+
     def __init__(self):
-        # Call the parent class constructor to initialize app_settings (اصحي يا بابا )
+        """Load shared settings and set the conversion factor for file sizes."""
         super().__init__()
-        self.size_scale = 1024 * 1024  # Scale factor to convert MB to bytes
+        self.size_scale = 1024 * 1024
 
-    # make  a  new function to validate the file extension and size
     def validate_uploaded_file(self, file: UploadFile):
+        """Check the upload's declared content type and size against the settings.
 
+        Return a boolean and a message the route can use in its response.
+        """
         if file.content_type not in self.app_settings.FILE_ALLOWED_TYPES:
             return False, ResponseSignal.FILE_TYPE_NOT_ALLOWED.value
 
@@ -23,7 +29,11 @@ class DataController(BaseController):
         return True, ResponseSignal.FILE_VALIDATED_SUCCESS.value
 
     def generate_unique_filepath(self, orig_file_name: str, project_id: str):
+        """Return an unused path in the project's folder and its filename as the file ID.
 
+        Prefix the cleaned name with a random key so uploads with the same
+        original filename can be stored separately.
+        """
         random_key = self.generate_random_string()
         project_path = ProjectController().get_project_path(project_id=project_id)
 
@@ -46,11 +56,9 @@ class DataController(BaseController):
         return new_file_path, random_key + "_" + cleaned_file_name
 
     def get_clean_file_name(self, orig_file_name: str):
-
-        # remove any special characters, except underscore and .
+        """Keep letters, numbers, underscores, and dots from the original filename."""
         cleaned_file_name = re.sub(r'[^\w.]', '', orig_file_name.strip())
 
-        # replace spaces with underscore
         cleaned_file_name = cleaned_file_name.replace(" ", "_")
 
         return cleaned_file_name
