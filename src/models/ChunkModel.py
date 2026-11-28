@@ -59,3 +59,12 @@ class ChunkModel(BaseDataModel):
             result = await self.collection.bulk_write(operations)
             inserted_count += result.inserted_count
         return inserted_count
+
+    async def delete_chunk_by_project_id(self, project_id: ObjectId) -> int:
+        """Delete a project's chunks and return how many were removed.
+
+        1 -> Match chunk_project_id against the project's MongoDB ObjectId.
+        2 -> Delete the matching documents and use MongoDB's deleted count.
+        """
+        result = await self.collection.delete_many({"chunk_project_id": project_id})
+        return result.deleted_count

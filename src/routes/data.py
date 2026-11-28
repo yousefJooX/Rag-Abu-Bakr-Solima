@@ -95,6 +95,7 @@ async def process_endpoint(request: Request, project_id: str, payload: ProcessRe
         )
 
     file_id = payload.file_id
+    do_reset = payload.do_reset
     process_controller = ProcessController(project_id=project_id)
     file_content = process_controller.get_file_content(file_id=file_id)
     if not file_content:
@@ -126,6 +127,11 @@ async def process_endpoint(request: Request, project_id: str, payload: ProcessRe
         for order, chunk in enumerate(chunks, start=1)
     ]
     chunk_model = ChunkModel(db_client=request.app.db_client)
+
+    # Validate and split the file first so a failed split leaves existing chunks in place.
+    if do_reset == 1:
+        _ = await chunk_model.delete_chunk_by_project_id(project_id=project.id)
+
     inserted_chunks = await chunk_model.insert_chunks_bulk(chunks=file_chunks_records)
 
     return JSONResponse(
