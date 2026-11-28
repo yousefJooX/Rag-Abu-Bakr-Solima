@@ -9,5 +9,5 @@ class ProcessRequest(BaseModel):
     file_id: str
     chunk_size: Optional[int] = 100
     overlap_size: Optional[int] = 20
-    # The schema accepts this flag, but the route does not read it yet.
-    do_reset : Optional[int] = 0
+    # Use 1 to clear the project's existing chunks before storing this file's chunks.
+    do_reset: Optional[int] = 0
